@@ -40,7 +40,7 @@ def infer_mysql_data_type(series):
         max_length = series.dropna().astype(str).map(len).max()
         return f"VARCHAR({max(255, max_length)})"
 
-def upload_csv_to_databases(csv_path):
+def upload_csv_to_sqldatabases(csv_path):
     """
     Uploads a CSV file to MySQL and MongoDB, using user-defined table names and column selections.
     """
@@ -93,19 +93,9 @@ def upload_csv_to_databases(csv_path):
         mysql_conn.commit()
         print(f"Data inserted into table '{table_name}'.")
 
-        # Upload to MongoDB
-        #mongo_db[table_name].insert_many(df[selected_column_names].to_dict('records'))
-        #print(f"Data from selected columns uploaded to MongoDB collection '{table_name}'.")
-
     print("All data uploaded. Exiting program.")
-
-
-        # Upload to MongoDB
-        #mongo_db[table_name].insert_many(df[selected_column_names].to_dict('records'))
-        #print(f"Data from selected columns uploaded to MongoDB collection '{table_name}'.")
-
 
 
 # Example usage
 # upload_csv_to_databases('example.csv')
-upload_csv_to_databases('vgsales.csv')
+upload_csv_to_sqldatabases('vgsales.csv')
