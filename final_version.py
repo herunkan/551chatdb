@@ -13,7 +13,7 @@ from nltk.corpus import stopwords
 mysql_conn = pymysql.connect(
     host='localhost',
     user='root',
-    password='dcx200211110@',
+    password='khrnb666',
     #database='chatdb'
 )
 mysql_cursor = mysql_conn.cursor()
@@ -109,10 +109,8 @@ def upload_csv_to_mongo(csv_path):
     Uploads a CSV file to MongoDB, allowing user-defined collection names and column selections.
     """
     # Load CSV into pandas DataFrame
-    create_database_if_not_exists('chatdb')
 
     df = pd.read_csv(csv_path)
-
     while True:
         # Show column options for selection
         print("\nAvailable Columns:")
@@ -353,6 +351,170 @@ class SemanticQueryGenerator:
                 return "Unsupported MongoDB query format."
 
 
+def replace_nl_keywords_with_sql(nl_query):
+    replacements = {
+        r'\b(find|give me|search for|show)\b': 'SELECT',
+        r'\b(in|within)\b': 'FROM',
+        r'\b(filter by|if|when)\b': 'WHERE',
+        r'\b(grouped by|categorized by)\b': 'GROUP BY',
+        r'\b(sort by|ordered by)\b': 'ORDER BY',
+        r'\b(total|sum)\b': 'SUM',
+        r'\b(average|avg)\b': 'AVG',
+        r'\b(maximum|max)\b': 'MAX',
+        r'\b(minimum|min)\b': 'MIN',
+        r'\b(count)\b': 'COUNT',
+        r'\b(greater than)\b': '>',
+        r'\b(less than)\b': '<',
+        r'\b(equal to)\b': '=',
+        r'\b(not equal to)\b': '!=',
+        r'\b(between)\b': 'BETWEEN'
+    }
+    for pattern, replacement in replacements.items():
+        nl_query = re.sub(pattern, replacement, nl_query, flags=re.IGNORECASE)
+
+    #Handle COUNT and other functions with parentheses
+    nl_query = re.sub(r'COUNT (\w+)', r'COUNT(\1)', nl_query, flags=re.IGNORECASE)
+    nl_query = re.sub(r'SUM (\w+)', r'SUM(\1)', nl_query, flags=re.IGNORECASE)
+    nl_query = re.sub(r'AVG (\w+)', r'AVG(\1)', nl_query, flags=re.IGNORECASE)
+    nl_query = re.sub(r'MAX (\w+)', r'MAX(\1)', nl_query, flags=re.IGNORECASE)
+    nl_query = re.sub(r'MIN (\w+)', r'MIN(\1)', nl_query, flags=re.IGNORECASE)
+    nl_query = re.sub(r"= ([A-Za-z0-9_]+)", r"= '\1'", nl_query)
+
+    return nl_query
+
+# def parse_nl_query(nl_query):
+#     sql_query = replace_nl_keywords_with_sql(nl_query)
+#     print(f"Transformed SQL Query: {sql_query}")  # Debugging line
+#     patterns = {
+#         "select": r"SELECT\s+(?P<select_columns>[\w\s,]+)\s+FROM",
+#         "from": r"FROM\s+(?P<table>\w+)",
+#         "where": r"WHERE\s+(?P<conditions>[^\n;]+)",
+#         "group_by": r"GROUP BY\s+(?P<group_by_column>\w+)",
+#         "order_by": r"ORDER BY\s+(?P<order_by_column>\w+)(\s+(?P<order>(ASC|DESC)))?"
+#         }
+#     constructs = {}
+#     for key, pattern in patterns.items():
+#         match = re.search(pattern, sql_query, re.IGNORECASE)
+#         if match:
+#             constructs[key] = match.groupdict()
+#             print(f"Matched {key}: {match.groupdict()}")  # Debugging matched parts
+#     return constructs
+
+def parse_nl_query(nl_query):
+    # Replace natural language keywords with SQL keywords
+    sql_query = replace_nl_keywords_with_sql(nl_query)
+    
+    # Regular expressions for identifying different parts of the query
+    patterns = {
+        "select": r"SELECT\s+(?P<select_columns>[\w\s\(\),]+)\s+FROM",
+        "from": r"FROM\s+(?P<table>\w+)",
+        "where": r"WHERE\s+(?P<conditions>[^\n;]+)",
+        "group_by": r"GROUP BY\s+(?P<group_by_column>\w+)",
+        "order_by": r"ORDER BY\s+(?P<order_by_column>\w+)(\s+(?P<order>(ASC|DESC)))?"
+    }
+
+    constructs = {}
+    for key, pattern in patterns.items():
+        match = re.search(pattern, sql_query, re.IGNORECASE)
+        if match:
+            constructs[key] = match.groupdict()
+    
+    return constructs
+
+def generate_sql_query(constructs):
+    select_clause = f"SELECT {constructs['select']['select_columns']}" if "select" in constructs else "SELECT *"
+    from_clause = f"FROM {constructs['from']['table']}" if "from" in constructs else ""
+    where_clause = f"WHERE {constructs['where']['conditions']}" if "where" in constructs else ""
+    group_by_clause = f"GROUP BY {constructs['group_by']['group_by_column']}" if "group_by" in constructs else ""
+    order_by_clause = f"ORDER BY {constructs['order_by']['order_by_column']} {constructs['order_by'].get('order', 'ASC')}" if "order_by" in constructs else ""
+    if "order_by" in constructs:
+        order_by_column = constructs["order_by"]["order_by_column"]
+        direction = constructs["order_by"].get("direction", "ASC")  # Default to ASC if no direction specified
+        order_by_clause = f"ORDER BY {order_by_column} {direction}"
+    else:
+        order_by_clause = ""
+    # Combine clauses carefully to avoid repetition
+    query_parts = [
+        select_clause.strip(),
+        from_clause.strip(),
+        where_clause.strip(),
+        group_by_clause.strip(),
+        order_by_clause.strip()
+    ]
+    
+
+    
+    # Ensure no duplication or malformed structure
+    query = " ".join(part for part in query_parts if part)
+    return query.strip() + ";"
+
+def generate_mongo_query(constructs):
+    pipeline = []
+    
+    # Handle "where" conditions
+    if "where" in constructs:
+        conditions = constructs["where"]["conditions"]
+        condition_parts = conditions.split()
+        column, operator, value = condition_parts[0], condition_parts[1], " ".join(condition_parts[2:])
+        operator_map = {'=': '$eq', '>': '$gt', '<': '$lt', '>=': '$gte', '<=': '$lte', '!=': '$ne'}
+        pipeline.append({"$match": {column: {operator_map[operator]: eval(value)}}})
+    
+    # Handle "group_by"
+    if "group_by" in constructs:
+        group_stage = {"_id": f"${constructs['group_by']['group_by_column']}"}
+        if "select" in constructs:
+            for field in constructs['select']['select_columns'].split(','):
+                field = field.strip()
+                if "COUNT" in field:
+                    field_name = field.replace("COUNT(", "").replace(")", "").strip()
+                    group_stage["COUNT"] = {"$sum": 1}  # Count occurrences
+                else:
+                    group_stage[field] = {"$first": f"${field}"}
+        pipeline.append({"$group": group_stage})
+    
+    # Handle "select"
+    if "select" in constructs and "group_by" not in constructs:
+        project_stage = {field.strip(): 1 for field in constructs['select']['select_columns'].split(',')}
+        pipeline.append({"$project": project_stage})
+    
+    # Handle "order_by"
+    if "order_by" in constructs:
+        order_stage = {
+            constructs['order_by']['order_by_column']: 
+            1 if constructs['order_by'].get('order', 'ASC') == 'ASC' else -1
+        }
+        pipeline.append({"$sort": order_stage})
+    
+    return pipeline
+
+def natural_language_query_handler(query_gen, db_type):
+    user_query = input("Enter your natural language query: ")
+    constructs = parse_nl_query(user_query)
+    if not constructs:
+        print("Could not interpret the query: Unable to generate a query from the input.")
+        return
+    if db_type == "mysql":
+        query = generate_sql_query(constructs)
+        print("\nGenerated Query:")
+        print(f"Natural Language: {user_query}")
+        print(f"SQL Query: {query}")
+        execute_choice = input("Do you want to execute this query? (1 for yes, 0 for no): ")
+        if execute_choice == '1':
+            execution_result = query_gen.execute_query(query)
+            print(f"\nExecution Result:\n{execution_result}")
+        else:
+            print("\nSkipping query execution.")
+    if db_type == "mongodb":
+        query = generate_mongo_query(constructs)
+        print("\nGenerated Query:")
+        print(f"Natural Language: {user_query}")
+        print(f"Mongo Query: {query}")
+        execute_choice = input("Do you want to execute this query? (1 for yes, 0 for no): ")
+        if execute_choice == '1':
+            execution_result = query_gen.execute_query(query)
+            print(f"\nExecution Result:\n{execution_result}")
+        else:
+            print("\nSkipping query execution.")
 
 def main():
     print("Welcome to ChatDB! Your interactive database assistant.")
@@ -446,11 +608,26 @@ def main():
         
         
         elif choice == '5':
-            print("Natural language query functionality is not implemented yet.")
+            db_choice = input("\nChoose a database to work with (1 for SQL, 2 for Mongo): ")
+            if db_choice == "1":
+                query_gen = SemanticQueryGenerator("mysql", mysql_conn)
+                natural_language_query_handler(query_gen, "mysql")
+            elif db_choice == "2":
+                query_gen = SemanticQueryGenerator("mongodb", mongo_db)
+                natural_language_query_handler(query_gen, "mongodb")
+            else:
+                print("Invalid database choice.")
+            
         elif choice == '6':
             print("Exiting ChatDB. Goodbye!")
             break
         else:
             print("Invalid choice. Please try again.")
 
+# nl_query = "find name in games table filter by publisher = Nintendo"
+# constructs = parse_nl_query(nl_query)
+# print("Constructs:", constructs)
+
+# sql_query = generate_sql_query(constructs)
+# print("Generated SQL Query:", sql_query)
 main()
