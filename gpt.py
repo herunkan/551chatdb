@@ -37,35 +37,32 @@ class SemanticQueryGenerator:
             raise ValueError("Unsupported database type. Use 'mysql' or 'mongodb'.")
         return schema
 
+
     def process_nl_to_query(self, nl_query):
         """
-        Process a natural language query into SQL or MongoDB query with support for multiple constructs.
+        Process a natural language query into SQL or MongoDB query using regular expressions.
         :param nl_query: The natural language query as input.
         :return: A dictionary containing the generated query and its natural language description.
         """
-        tokens = word_tokenize(nl_query.lower())
-        stop_words = set(stopwords.words("english"))
-        filtered_tokens = [t for t in tokens if t not in stop_words]
-
-        keywords = {
-            "select": ["select", "list", "get", "show", "retrieve"],
-            "filter": ["where", "filter", "that", "with", "having"],
-            "group_by": ["group", "group by"],
-            "order_by": ["order", "sort", "sorted", "order by"],
-            "aggregation": ["count", "average", "sum", "max", "min", "total"],
+        # Regular expressions for identifying different parts of the query
+        patterns = {
+            "select": r"(list|show|get|retrieve)\s+(all\s+)?(?P<select_columns>[\w\s,]+)?",
+            "filter": r"(where|filter)\s+(?P<conditions>.+)",
+            "group_by": r"group\s+by\s+(?P<group_by_column>\w+)",
+            "order_by": r"(order|sort)\s+by\s+(?P<order_by_column>\w+)(\s+(?P<order>(asc|desc)))?",
+            "aggregation": r"(count|sum|max|min|average)\s+(?P<aggregation_column>\w+)",
         }
 
-        constructs = []
-        for key, values in keywords.items():
-            if any(value in filtered_tokens for value in values):
-                constructs.append(key)
+        constructs = {}
+        for key, pattern in patterns.items():
+            match = re.search(pattern, nl_query, re.IGNORECASE)
+            if match:
+                constructs[key] = match.groupdict()
 
-        if not constructs:
-            return {"error": "Unable to identify any constructs from the query."}
-
+        # Determine the table/collection from the query
         table_or_collection = None
         for table in self.schema.keys():
-            if table.lower() in filtered_tokens:
+            if table.lower() in nl_query.lower():
                 table_or_collection = table
                 break
 
@@ -74,52 +71,62 @@ class SemanticQueryGenerator:
 
         columns = self.schema.get(table_or_collection, [])
 
+        # Build the query parts based on identified constructs
         query_parts = {"select": None, "where": None, "group_by": None, "order_by": None, "aggregation": None}
         nl_descriptions = []
 
+        selected_columns = []
         if "select" in constructs:
-            selected_columns = [col for col in columns if col.lower() in filtered_tokens]
+            select_columns = constructs["select"].get("select_columns")
+            if select_columns:
+                selected_columns = [
+                    col.strip() for col in select_columns.split(",") if col.strip() in columns
+                ]
             if not selected_columns:
                 selected_columns = ["*"]
-            query_parts["select"] = f"SELECT {', '.join(selected_columns)} FROM {table_or_collection}"
+            query_parts["select"] = f"SELECT {', '.join(selected_columns)}"
             nl_descriptions.append(f"Retrieve {', '.join(selected_columns)} from the {table_or_collection} table.")
 
         if "filter" in constructs:
-            for col in columns:
-                if col.lower() in filtered_tokens:
-                    condition = " ".join(filtered_tokens[filtered_tokens.index(col.lower()):])
-                    query_parts["where"] = f"WHERE {condition}"
-                    nl_descriptions.append(f"Filter rows where {condition}.")
-                    break
+            conditions = constructs["filter"].get("conditions")
+            if conditions:
+                query_parts["where"] = f"WHERE {conditions}"
+                nl_descriptions.append(f"Filter rows where {conditions}.")
 
         if "group_by" in constructs:
-            for col in columns:
-                if col.lower() in filtered_tokens:
-                    query_parts["group_by"] = f"GROUP BY {col}"
-                    nl_descriptions.append(f"Group rows by {col}.")
-                    break
+            group_by_column = constructs["group_by"].get("group_by_column")
+            if group_by_column in columns:
+                query_parts["group_by"] = f"GROUP BY {group_by_column}"
+                if group_by_column not in selected_columns:
+                    selected_columns.append(group_by_column)
+                nl_descriptions.append(f"Group rows by {group_by_column}.")
 
         if "order_by" in constructs:
-            for col in columns:
-                if col.lower() in filtered_tokens:
-                    order = "DESC" if "desc" in filtered_tokens else "ASC"
-                    query_parts["order_by"] = f"ORDER BY {col} {order}"
-                    nl_descriptions.append(f"Sort rows by {col} in {order.lower()} order.")
-                    break
+            order_by_column = constructs["order_by"].get("order_by_column")
+            order = constructs["order_by"].get("order", "ASC").upper()
+            if order_by_column in columns:
+                query_parts["order_by"] = f"ORDER BY {order_by_column} {order}"
+                if order_by_column not in selected_columns:
+                    selected_columns.append(order_by_column)
+                nl_descriptions.append(f"Sort rows by {order_by_column} in {order.lower()} order.")
 
         if "aggregation" in constructs:
-            for col in columns:
-                if col.lower() in filtered_tokens:
-                    func = next((agg for agg in ["AVG", "SUM", "COUNT", "MAX", "MIN"] if agg.lower() in filtered_tokens), "COUNT")
-                    query_parts["aggregation"] = f"{func}({col})"
-                    nl_descriptions.append(f"Calculate the {func.lower()} of {col}.")
-                    break
+            aggregation_column = constructs["aggregation"].get("aggregation_column")
+            func = constructs["aggregation"].get(0).upper()
+            if aggregation_column in columns:
+                query_parts["aggregation"] = f"{func}({aggregation_column})"
+                if aggregation_column not in selected_columns:
+                    selected_columns.append(aggregation_column)
+                nl_descriptions.append(f"Calculate the {func.lower()} of {aggregation_column}.")
 
+        # Combine query parts for SQL
         if self.db_type == "mysql":
+            query_parts["select"] = f"SELECT {', '.join(selected_columns)} FROM {table_or_collection}"
             query = " ".join(part for part in query_parts.values() if part)
         elif self.db_type == "mongodb":
+            # MongoDB pipeline logic
             pipeline = []
-            if query_parts["filter"]:
+            if query_parts["where"]:
                 filter_condition = query_parts["where"].replace("WHERE ", "").split()
                 column, operator, value = filter_condition[0], filter_condition[1], " ".join(filter_condition[2:])
                 pipeline.append({"$match": {column: eval(value)}})
@@ -141,6 +148,7 @@ class SemanticQueryGenerator:
 
         nl_description = " ".join(nl_descriptions)
         return {"query": query, "natural_language": nl_description}
+
 
 import pymysql
 
