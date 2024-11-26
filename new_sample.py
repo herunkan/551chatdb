@@ -13,7 +13,7 @@ from nltk.corpus import stopwords
 mysql_conn = pymysql.connect(
     host='localhost',
     user='root',
-    password='khrnb666',
+    password='dcx20021110@',
     database='chatdb'
 )
 mysql_cursor = mysql_conn.cursor()
