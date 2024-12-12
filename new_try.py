@@ -13,7 +13,7 @@ from nltk.corpus import stopwords
 mysql_conn = pymysql.connect(
     host='localhost',
     user='root',
-    password='khrnb666',
+    password='dcx20021110@',
     #database='chatdb'
 )
 mysql_cursor = mysql_conn.cursor()
@@ -466,7 +466,8 @@ def replace_nl_keywords_with_sql(nl_query):
     nl_query = re.sub(r'AVG (\w+)', r'AVG(\1)', nl_query, flags=re.IGNORECASE)
     nl_query = re.sub(r'MAX (\w+)', r'MAX(\1)', nl_query, flags=re.IGNORECASE)
     nl_query = re.sub(r'MIN (\w+)', r'MIN(\1)', nl_query, flags=re.IGNORECASE)
-    nl_query = re.sub(r"= ([A-Za-z0-9_]+)", r"= '\1'", nl_query)
+    nl_query = re.sub(r"= ([A-Za-z0-9_]+)", r"= \1", nl_query) 
+
 
     return nl_query
 
@@ -518,6 +519,10 @@ def parse_nl_query(nl_query, schema):
             else:
                 raise ValueError(f"No shared key found between {table1} and {table2}. Please provide an explicit join condition.")
         constructs["join"]["join_condition"] = join_condition
+        if "where" in constructs:  
+            where_condition = constructs["where"]["conditions"]  
+            if where_condition in join_condition:  
+                del constructs["where"]     
 
     if "where" in constructs:
         # Clean up WHERE conditions
